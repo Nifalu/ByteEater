@@ -1,3 +1,6 @@
+mod model;
+mod tui;
+
 use anyhow::{anyhow, Result};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
 use serde_json::Value;
@@ -89,28 +92,50 @@ fn print(v: &Value) {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    let cmd = args.get(1).map(|s| s.as_str());
+    let arg = args.get(2).map(|s| s.as_str());
 
-    if args.get(1).map(|s| s.as_str()) != Some("indulge") || args.get(2).is_none() {
-        eprintln!("Usage: byteeater indulge <today|tomorrow|yesterday|t+/-n|thisweek|lastweek|nextweek|w+/-n|w7|DD-MM-YYYY>");
-        std::process::exit(1);
-    }
-
-    match parse(&args[2])? {
-        Craving::Day(date) => {
-            let data = byteeater::fetch_week(date.year(), date.iso_week().week())?;
-            let days = slim(&data);
-            let weekday = date.weekday().num_days_from_monday();
-            if let Some(day) = days.as_array().and_then(|ds| {
-                ds.iter()
-                    .find(|d| d.get("WeekDay").and_then(|w| w.as_f64()) == Some(weekday as f64))
-            }) {
-                print(day);
-            } else {
-                println!("null");
+    match cmd {
+        Some("indulge") => {
+            let spec = arg.ok_or_else(|| anyhow!("missing date specifier"))?;
+            match parse(spec)? {
+                Craving::Day(date) => {
+                    let data = byteeater::fetch_week(date.year(), date.iso_week().week())?;
+                    let days = slim(&data);
+                    let weekday = date.weekday().num_days_from_monday();
+                    if let Some(day) = days.as_array().and_then(|ds| {
+                        ds.iter().find(|d| {
+                            d.get("WeekDay").and_then(|w| w.as_f64()) == Some(weekday as f64)
+                        })
+                    }) {
+                        print(day);
+                    } else {
+                        println!("null");
+                    }
+                }
+                Craving::Week(year, week) => {
+                    print(&slim(&byteeater::fetch_week(year, week)?));
+                }
             }
         }
-        Craving::Week(year, week) => {
-            print(&slim(&byteeater::fetch_week(year, week)?));
+        Some("browse") => {
+            let spec = arg.unwrap_or("thisweek");
+            let (year, week) = match parse(spec)? {
+                Craving::Day(date) => (date.year(), date.iso_week().week()),
+                Craving::Week(y, w) => (y, w),
+            };
+            let data = byteeater::fetch_week(year, week)?;
+            let days = model::parse_days(&data);
+            let label = format!("W{} {}", week, year);
+            tui::run(days, label)?;
+        }
+        _ => {
+            eprintln!("Usage:");
+            eprintln!("  byteeater indulge <date>   Print menu as JSON");
+            eprintln!("  byteeater browse  [date]   Interactive TUI (default: thisweek)");
+            eprintln!();
+            eprintln!("Date: today|tomorrow|yesterday|t+/-n|thisweek|lastweek|nextweek|w+/-n|w7|DD-MM-YYYY");
+            std::process::exit(1);
         }
     }
     Ok(())
